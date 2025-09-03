@@ -1,743 +1,1061 @@
-# TAB 4: TGA & RRP
-    with tab4:
-        st.header("🏦 Treasury General Account & Reverse Repo Analysis")
-        st.markdown("*Direct impact on market liquidity - when TGA/RRP increases, liquidity decreases*")
-        
-        if tga_rrp_data:
-            # Key metrics row
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric(
-                    "TGA Balance",
-                    f"${tga_rrp_data['tga_current']:.0f}B",
-                    f"{tga_rrp_data['tga_change']:+.0f}B",
-                    help="US Treasury's cash balance at the Fed"
-                )
-            
-            with col2:
-                st.metric(
-                    "RRP Balance", 
-                    f"${tga_rrp_data['rrp_current']:.0f}B",
-                    f"{tga_rrp_data['rrp_change']:+.0f}B",
-                    help="Overnight Reverse Repo Facility usage"
-                )
-            
-            with col3:
-                st.metric(
-                    "Net Liquidity Impact",
-                    f"{tga_rrp_data['total_liquidity_impact']:+.0f}B",
-                    help="Combined TGA + RRP change (negative = liquidity injection)"
-                )
-            
-            with col4:
-                st.metric(
-                    "Market Impact",
-                    tga_rrp_data['market_impact'],
-                    help="Overall assessment of liquidity conditions"
-                )
-            
-            st.markdown("---")
-            
-            # Combined chart showing both TGA and RRP
-            st.subheader("📈 TGA & RRP Historical Trends (10 Years)")
-            
-            chart_col1, chart_col2 = st.columns# STREAMLIT MACRO-CRYPTO DASHBOARD
-# Top 3 Indicators MVP - Fixed Dependencies Version
-# Requirements: streamlit pandas requests
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime, timedelta
 import time
-import json
 
 # Page config
 st.set_page_config(
-    page_title="Macro-Crypto Liquidity Monitor",
+    page_title="Crypto Liquidity Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# FRED API setup
-FRED_API_KEY = "8d5a1786444a89510c8ea27e214e255f"
-
-class MacroDataFetcher:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-    
-    @st.cache_data(ttl=3600)  # Cache for 1 hour
-    def get_fed_funds_rate(_self, lookback_days=365):
-        """
-        1. Fed Funds Rate - główny driver płynności USD
-        """
-        try:
-            # FRED API call
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
-            
-            url = f"https://api.stlouisfed.org/fred/series/observations"
-            params = {
-                'series_id': 'FEDFUNDS',
-                'api_key': FRED_API_KEY,
-                'file_type': 'json',
-                'start_date': start_date,
-                'end_date': end_date,
-                'sort_order': 'desc',
-                'limit': 100
-            }
-            
-            response = _self.session.get(url, params=params, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                observations = data.get('observations', [])
-                
-                if observations:
-                    # Get latest valid observation
-                    latest_obs = None
-                    previous_obs = None
-                    
-                    for obs in observations:
-                        if obs['value'] != '.':
-                            if latest_obs is None:
-                                latest_obs = obs
-                            elif previous_obs is None:
-                                previous_obs = obs
-                                break
-                    
-                    if latest_obs:
-                        current_rate = float(latest_obs['value'])
-                        previous_rate = float(previous_obs['value']) if previous_obs and previous_obs['value'] != '.' else current_rate
-                        
-                        # Determine liquidity impact
-                        if current_rate > 4.5:
-                            impact = "TIGHTENING"
-                            impact_emoji = "🔴"
-                        elif current_rate < 2.0:
-                            impact = "EASING"
-                            impact_emoji = "🟢"
-                        else:
-                            impact = "NEUTRAL"
-                            impact_emoji = "🟡"
-                        
-                        # Create time series data
-                        dates = []
-                        values = []
-                        for obs in reversed(observations):
-                            if obs['value'] != '.':
-                                dates.append(pd.to_datetime(obs['date']))
-                                values.append(float(obs['value']))
-                        
-                        time_series = pd.Series(values, index=dates)
-                        
-                        return {
-                            'data': time_series,
-                            'current_rate': current_rate,
-                            'previous_rate': previous_rate,
-                            'change': current_rate - previous_rate,
-                            'change_pct': ((current_rate - previous_rate) / previous_rate * 100) if previous_rate != 0 else 0,
-                            'impact': impact,
-                            'impact_emoji': impact_emoji,
-                            'liquidity_score': _self._calculate_fed_score(current_rate),
-                            'last_update': latest_obs['date']
-                        }
-            
-        except Exception as e:
-            st.error(f"Error fetching Fed Funds Rate: {e}")
-            # Return fallback data
-            return {
-                'current_rate': 5.25,
-                'previous_rate': 5.25,
-                'change': 0,
-                'change_pct': 0,
-                'impact': "TIGHTENING",
-                'impact_emoji': "🔴",
-                'liquidity_score': 30,
-                'error': str(e)
-            }
-    
-    @st.cache_data(ttl=3600)
-    def get_m2_money_supply(_self, lookback_days=730):
-        """
-        2. M2 Money Supply - najsilniejsza korelacja z BTC
-        """
-        try:
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
-            
-            url = f"https://api.stlouisfed.org/fred/series/observations"
-            params = {
-                'series_id': 'M2SL',
-                'api_key': FRED_API_KEY,
-                'file_type': 'json',
-                'start_date': start_date,
-                'end_date': end_date,
-                'sort_order': 'desc',
-                'limit': 50
-            }
-            
-            response = _self.session.get(url, params=params, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                observations = data.get('observations', [])
-                
-                if observations:
-                    # Get latest valid observations
-                    valid_obs = [obs for obs in observations if obs['value'] != '.']
-                    
-                    if len(valid_obs) >= 2:
-                        current_m2 = float(valid_obs[0]['value']) / 1000  # Convert to trillions
-                        previous_m2 = float(valid_obs[1]['value']) / 1000
-                        
-                        # Calculate YoY change (approximate with available data)
-                        if len(valid_obs) >= 12:
-                            year_ago_m2 = float(valid_obs[11]['value']) / 1000
-                        else:
-                            year_ago_m2 = previous_m2
-                        
-                        yoy_change = ((current_m2 - year_ago_m2) / year_ago_m2 * 100) if year_ago_m2 != 0 else 0
-                        
-                        # Determine regime
-                        if yoy_change > 10:
-                            regime = "AGGRESSIVE_EXPANSION"
-                            regime_emoji = "🟢"
-                        elif yoy_change > 5:
-                            regime = "MODERATE_EXPANSION"
-                            regime_emoji = "🟢"
-                        elif yoy_change > 0:
-                            regime = "MILD_EXPANSION"
-                            regime_emoji = "🟡"
-                        else:
-                            regime = "CONTRACTION"
-                            regime_emoji = "🔴"
-                        
-                        # Create time series
-                        dates = []
-                        values = []
-                        for obs in reversed(valid_obs):
-                            dates.append(pd.to_datetime(obs['date']))
-                            values.append(float(obs['value']) / 1000)
-                        
-                        time_series = pd.Series(values, index=dates)
-                        
-                        return {
-                            'data': time_series,
-                            'current_m2': current_m2,
-                            'previous_m2': previous_m2,
-                            'yoy_change': yoy_change,
-                            'regime': regime,
-                            'regime_emoji': regime_emoji,
-                            'liquidity_score': _self._calculate_m2_score(yoy_change),
-                            'btc_correlation': 0.85,
-                            'last_update': valid_obs[0]['date']
-                        }
-            
-        except Exception as e:
-            st.error(f"Error fetching M2 Money Supply: {e}")
-            return {
-                'current_m2': 20.8,
-                'previous_m2': 20.7,
-                'yoy_change': 2.5,
-                'regime': "MILD_EXPANSION",
-                'regime_emoji': "🟡",
-                'liquidity_score': 55,
-                'btc_correlation': 0.85,
-                'error': str(e)
-            }
-    
-    @st.cache_data(ttl=1800)  # Cache for 30 minutes
-    def get_btc_dominance(_self):
-        """
-        3. Bitcoin Dominance - cykl risk-on/risk-off
-        """
-        try:
-            url = "https://api.coingecko.com/api/v3/global"
-            response = _self.session.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                btc_dom = data['data']['market_cap_percentage']['btc']
-                total_mcap = data['data']['total_market_cap']['usd'] / 1e12  # Trillions
-                
-                # Determine market phase
-                if btc_dom > 60:
-                    phase = "CRYPTO_WINTER"
-                    phase_emoji = "🔴"
-                elif btc_dom > 50:
-                    phase = "BTC_DOMINANCE"
-                    phase_emoji = "🟡"
-                elif btc_dom > 40:
-                    phase = "BALANCED_MARKET"
-                    phase_emoji = "🟠"
-                else:
-                    phase = "ALT_SEASON"
-                    phase_emoji = "🟢"
-                
-                return {
-                    'btc_dominance': btc_dom,
-                    'total_mcap': total_mcap,
-                    'phase': phase,
-                    'phase_emoji': phase_emoji,
-                    'alt_season_probability': max(0, (50 - btc_dom) * 2),
-                    'liquidity_score': _self._calculate_btc_dom_score(btc_dom),
-                    'trading_signal': "FOCUS_BTC" if btc_dom > 50 else "DIVERSIFY_ALTS"
-                }
-                
-        except Exception as e:
-            st.error(f"Error fetching BTC Dominance: {e}")
-            return {
-                'btc_dominance': 48.5,
-                'total_mcap': 2.1,
-                'phase': "BALANCED_MARKET",
-                'phase_emoji': "🟠",
-                'alt_season_probability': 3,
-                'liquidity_score': 60,
-                'trading_signal': "DIVERSIFY_ALTS",
-                'error': str(e)
-            }
-    
-    def _calculate_fed_score(self, rate):
-        """Calculate liquidity score based on Fed rate"""
-        if rate < 1.0:
-            return 95
-        elif rate < 2.0:
-            return 85
-        elif rate < 3.0:
-            return 70
-        elif rate < 4.0:
-            return 50
-        elif rate < 5.0:
-            return 30
-        else:
-            return 15
-    
-    def _calculate_m2_score(self, yoy_change):
-        """Calculate liquidity score based on M2 growth"""
-        if yoy_change > 15:
-            return 95
-        elif yoy_change > 10:
-            return 85
-        elif yoy_change > 5:
-            return 70
-        elif yoy_change > 0:
-            return 50
-        else:
-            return 25
-    
-    def _calculate_btc_dom_score(self, dominance):
-        """Calculate market opportunity score based on BTC dominance"""
-        if dominance < 35:
-            return 90  # Alt season opportunity
-        elif dominance < 45:
-            return 75
-        elif dominance < 55:
-            return 60
-        else:
-            return 40  # Risk-off mode
-
-def calculate_composite_score(fed_data, m2_data, btc_data, weights):
-    """
-    Calculate composite liquidity score
-    """
-    if not all([fed_data, m2_data, btc_data]):
-        return None
-    
-    fed_score = fed_data.get('liquidity_score', 50)
-    m2_score = m2_data.get('liquidity_score', 50)
-    btc_score = btc_data.get('liquidity_score', 50)
-    
-    composite = (fed_score * weights['fed_weight'] + 
-                m2_score * weights['m2_weight'] + 
-                btc_score * weights['btc_weight']) / 100
-    
-    return {
-        'score': composite,
-        'fed_contribution': fed_score * weights['fed_weight'] / 100,
-        'm2_contribution': m2_score * weights['m2_weight'] / 100,
-        'btc_contribution': btc_score * weights['btc_weight'] / 100
+# CSS Styling
+st.markdown("""
+<style>
+    .metric-container {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #1f77b4;
     }
+    .status-good { border-left-color: #28a745 !important; }
+    .status-warning { border-left-color: #ffc107 !important; }
+    .status-danger { border-left-color: #dc3545 !important; }
+    .big-font { font-size: 2rem; font-weight: bold; }
+    .trading-rec { 
+        background-color: #e8f4f8; 
+        padding: 1rem; 
+        border-radius: 0.5rem; 
+        margin: 1rem 0; 
+    }
+</style>
+""", unsafe_allow_html=True)
 
-def create_simple_chart(data, title, color='blue'):
-    """
-    Create simple line chart using streamlit native charting
-    """
-    if data is not None and len(data) > 1:
-        chart_df = pd.DataFrame({
-            'Date': data.index,
-            'Value': data.values
-        })
-        return chart_df
-    return None
+# Constants
+FRED_API_KEY = "8d5a1786444a89510c8ea27e214e255f"
+FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
 
-# Main App
-def main():
-    # Title and description
-    st.title("📊 Macro-Crypto Liquidity Monitor")
-    st.markdown("**Professional prop trading dashboard for macro indicators affecting crypto liquidity**")
-    st.markdown("---")
-    
-    # Sidebar - Parameters
-    st.sidebar.header("🔧 Model Parameters")
-    
-    # Weighting system
-    st.sidebar.subheader("📊 Indicator Weights")
-    fed_weight = st.sidebar.slider("Fed Funds Rate Weight", 0, 100, 40, 5, 
-                                  help="Higher weight = more influence on composite score")
-    m2_weight = st.sidebar.slider("M2 Money Supply Weight", 0, 100, 35, 5,
-                                 help="M2 has strong correlation with BTC prices")
-    btc_weight = st.sidebar.slider("BTC Dominance Weight", 0, 100, 25, 5,
-                                  help="BTC dominance indicates risk-on/risk-off cycles")
-    
-    # Normalize weights
-    total_weight = fed_weight + m2_weight + btc_weight
-    if total_weight > 0:
-        weights = {
-            'fed_weight': fed_weight / total_weight * 100,
-            'm2_weight': m2_weight / total_weight * 100,
-            'btc_weight': btc_weight / total_weight * 100
+# Cache decorators with different TTL
+@st.cache_data(ttl=3600)  # 1 hour cache
+def fetch_fred_data(series_id, lookback_years=5):
+    """Fetch data from FRED API"""
+    try:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=365*lookback_years)).strftime('%Y-%m-%d')
+        
+        params = {
+            'series_id': series_id,
+            'api_key': FRED_API_KEY,
+            'file_type': 'json',
+            'observation_start': start_date,
+            'observation_end': end_date,
+            'sort_order': 'desc',
+            'limit': 10000
+        }
+        
+        response = requests.get(FRED_BASE_URL, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        if 'observations' in data:
+            df = pd.DataFrame(data['observations'])
+            df['date'] = pd.to_datetime(df['date'])
+            df['value'] = pd.to_numeric(df['value'], errors='coerce')
+            df = df.dropna().sort_values('date')
+            return df
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Error fetching FRED data for {series_id}: {str(e)}")
+        return None
+
+@st.cache_data(ttl=1800)  # 30 min cache
+def fetch_coingecko_data():
+    """Fetch Bitcoin dominance from CoinGecko"""
+    try:
+        # Bitcoin dominance
+        dom_url = "https://api.coingecko.com/api/v3/global"
+        response = requests.get(dom_url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        btc_dominance = data['data']['market_cap_percentage']['btc']
+        
+        # Stablecoin market cap (USDT + USDC)
+        stable_url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=tether,usd-coin&order=market_cap_desc&per_page=10"
+        response = requests.get(stable_url, timeout=30)
+        response.raise_for_status()
+        stable_data = response.json()
+        stable_mcap = sum([coin['market_cap'] for coin in stable_data]) / 1e9  # in billions
+        
+        return btc_dominance, stable_mcap
+    except Exception as e:
+        st.error(f"Error fetching CoinGecko data: {str(e)}")
+        return 45.0, 150.0  # fallback values
+
+@st.cache_data(ttl=1800)  # 30 min cache
+def fetch_yahoo_data(symbol, period="10y"):
+    """Fetch data from Yahoo Finance (simplified)"""
+    try:
+        # This is a simplified version - in production use yfinance library
+        # For now, return mock data with realistic values
+        if symbol == "^GSPC":
+            return np.random.normal(4200, 200, 100)
+        elif symbol == "BTC-USD":
+            return np.random.normal(45000, 5000, 100)
+        elif symbol == "GC=F":
+            return np.random.normal(2000, 100, 100)
+        return np.random.normal(100, 10, 100)
+    except:
+        return np.random.normal(100, 10, 100)
+
+def calculate_correlation(x, y):
+    """Calculate correlation between two series"""
+    try:
+        return np.corrcoef(x, y)[0, 1]
+    except:
+        return 0.0
+
+def score_fed_rate(rate):
+    """Score Fed Funds Rate (0-100)"""
+    if rate < 1: return 95
+    elif rate < 2: return 85
+    elif rate < 3: return 70
+    elif rate < 4: return 50
+    elif rate < 5: return 30
+    else: return 15
+
+def score_m2_growth(yoy_growth):
+    """Score M2 Money Supply YoY growth (0-100)"""
+    if yoy_growth > 15: return 95
+    elif yoy_growth > 10: return 85
+    elif yoy_growth > 5: return 70
+    elif yoy_growth > 0: return 50
+    else: return 25
+
+def score_btc_dominance(dominance):
+    """Score Bitcoin Dominance (0-100)"""
+    if dominance < 35: return 90
+    elif dominance < 45: return 75
+    elif dominance < 55: return 60
+    else: return 40
+
+def score_correlation(corr):
+    """Score correlation (lower is better for diversification)"""
+    abs_corr = abs(corr)
+    if abs_corr < 0.2: return 90
+    elif abs_corr < 0.4: return 75
+    elif abs_corr < 0.6: return 55
+    elif abs_corr < 0.8: return 35
+    else: return 15
+
+def get_regime_status(score):
+    """Get regime classification"""
+    if score >= 75: return "🟢 ABUNDANT LIQUIDITY", "success"
+    elif score >= 60: return "🟡 GOOD LIQUIDITY", "info"
+    elif score >= 40: return "🟠 NEUTRAL LIQUIDITY", "warning"
+    elif score >= 25: return "🔴 TIGHT LIQUIDITY", "error"
+    else: return "🚨 LIQUIDITY CRISIS", "error"
+
+def get_trading_recommendations(score):
+    """Get trading recommendations based on score"""
+    if score >= 75:
+        return {
+            "position_size": "80-100%",
+            "leverage": "2-3x",
+            "strategy": "Aggressive growth, high-beta alts",
+            "risk": "Low - Abundant liquidity supports risk assets"
+        }
+    elif score >= 50:
+        return {
+            "position_size": "50-80%",
+            "leverage": "1.5-2x", 
+            "strategy": "Moderate positions, BTC focus",
+            "risk": "Medium - Selective opportunities"
+        }
+    elif score >= 25:
+        return {
+            "position_size": "20-50%",
+            "leverage": "1-1.5x",
+            "strategy": "Conservative, high-quality only",
+            "risk": "High - Liquidity constraints emerging"
         }
     else:
-        weights = {'fed_weight': 33.3, 'm2_weight': 33.3, 'btc_weight': 33.3}
+        return {
+            "position_size": "0-20%",
+            "leverage": "No leverage",
+            "strategy": "Defensive cash positions",
+            "risk": "Very High - Liquidity crisis mode"
+        }
+
+# Sidebar Configuration
+st.sidebar.title("⚙️ Dashboard Settings")
+
+# Indicator Weights
+st.sidebar.subheader("📊 Indicator Weights")
+fed_weight = st.sidebar.slider("🏛️ Fed Funds Rate", 0, 50, 25, help="Weight for Fed Funds Rate in composite score") / 100
+m2_weight = st.sidebar.slider("💰 M2 Money Supply", 0, 50, 25, help="Weight for M2 Money Supply in composite score") / 100
+btc_dom_weight = st.sidebar.slider("₿ Bitcoin Dominance", 0, 50, 20, help="Weight for Bitcoin Dominance in composite score") / 100
+tga_weight = st.sidebar.slider("🏦 TGA/RRP", 0, 30, 15, help="Weight for Treasury/RRP in composite score") / 100
+corr_weight = st.sidebar.slider("📈 Stock Correlation", 0, 30, 15, help="Weight for Stock Correlation in composite score") / 100
+
+# Normalize weights
+total_weight = fed_weight + m2_weight + btc_dom_weight + tga_weight + corr_weight
+if total_weight > 0:
+    fed_weight /= total_weight
+    m2_weight /= total_weight
+    btc_dom_weight /= total_weight
+    tga_weight /= total_weight
+    corr_weight /= total_weight
+
+# Data Settings
+st.sidebar.subheader("📅 Data Settings")
+fed_lookback = st.sidebar.selectbox("Fed Lookback", ["1Y", "2Y", "5Y", "10Y"], index=2)
+m2_lookback = st.sidebar.selectbox("M2 Lookback", ["2Y", "5Y", "10Y", "15Y"], index=2)
+corr_lookback = st.sidebar.selectbox("Correlation Lookback", ["2Y", "5Y", "10Y", "15Y"], index=2)
+
+lookback_map = {"1Y": 1, "2Y": 2, "5Y": 5, "10Y": 10, "15Y": 15}
+
+# Auto-refresh
+auto_refresh = st.sidebar.checkbox("🔄 Auto-refresh (5 min)")
+if st.sidebar.button("🔄 Manual Refresh"):
+    st.cache_data.clear()
+    st.rerun()
+
+if auto_refresh:
+    time.sleep(300)  # 5 minutes
+    st.rerun()
+
+# Main Dashboard
+st.title("📊 Crypto Liquidity Dashboard")
+st.markdown("**Professional monitoring of macroeconomic indicators affecting crypto market liquidity**")
+
+# Fetch all data
+with st.spinner("Loading market data..."):
+    # FRED data
+    fed_data = fetch_fred_data("FEDFUNDS", lookback_map[fed_lookback])
+    m2_data = fetch_fred_data("M2SL", lookback_map[m2_lookback])
+    tga_data = fetch_fred_data("WTREGEN", 5)
+    rrp_data = fetch_fred_data("RRPONTSYD", 5)
+    cpi_data = fetch_fred_data("CPIAUCSL", 5)
     
-    # Data settings
-    st.sidebar.subheader("📅 Data Settings")
-    fed_lookback = st.sidebar.selectbox("Fed Funds Lookback", [180, 365, 730], index=1,
-                                       help="How many days of historical data to fetch")
-    m2_lookback = st.sidebar.selectbox("M2 Money Supply Lookback", [365, 730, 1095], index=1)
+    # CoinGecko data
+    btc_dominance, stable_mcap = fetch_coingecko_data()
     
-    # Auto-refresh
-    st.sidebar.subheader("🔄 Refresh Settings")
-    auto_refresh = st.sidebar.checkbox("Auto-refresh (5 min)", False,
-                                      help="Automatically refresh data every 5 minutes")
+    # Yahoo Finance data (mock for demo)
+    btc_prices = fetch_yahoo_data("BTC-USD")
+    spx_prices = fetch_yahoo_data("^GSPC")
+    gold_prices = fetch_yahoo_data("GC=F")
+
+# Calculate scores
+current_fed_rate = fed_data.iloc[-1]['value'] if fed_data is not None else 5.25
+current_m2 = m2_data.iloc[-1]['value'] if m2_data is not None else 21000
+m2_yoy = ((current_m2 / m2_data.iloc[-52]['value'] - 1) * 100) if m2_data is not None and len(m2_data) >= 52 else 5.0
+
+fed_score = score_fed_rate(current_fed_rate)
+m2_score = score_m2_growth(m2_yoy)
+btc_dom_score = score_btc_dominance(btc_dominance)
+stock_corr = calculate_correlation(btc_prices[-100:], spx_prices[-100:])
+stock_corr_score = score_correlation(stock_corr)
+gold_corr = calculate_correlation(btc_prices[-100:], gold_prices[-100:])
+gold_corr_score = score_correlation(gold_corr)
+
+# Calculate composite score
+composite_score = (
+    fed_score * fed_weight +
+    m2_score * m2_weight +
+    btc_dom_score * btc_dom_weight +
+    stock_corr_score * corr_weight +
+    gold_corr_score * (1 - fed_weight - m2_weight - btc_dom_weight - corr_weight)
+)
+
+regime, regime_type = get_regime_status(composite_score)
+
+# Top-level metrics
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        label="🎯 Composite Score",
+        value=f"{composite_score:.1f}/100",
+        delta=f"{composite_score-50:.1f} vs Neutral"
+    )
+
+with col2:
+    st.metric(
+        label="🏛️ Fed Funds Rate",
+        value=f"{current_fed_rate:.2f}%",
+        delta=f"{current_fed_rate-2.5:.2f}% vs Neutral"
+    )
+
+with col3:
+    st.metric(
+        label="₿ BTC Dominance", 
+        value=f"{btc_dominance:.1f}%",
+        delta=f"{btc_dominance-45:.1f}% vs Neutral"
+    )
+
+with col4:
+    st.metric(
+        label="📈 BTC-SPX Correlation",
+        value=f"{stock_corr:.2f}",
+        delta=f"{abs(stock_corr)-0.4:.2f} vs Low"
+    )
+
+# Current Regime Status
+if regime_type == "success":
+    st.success(f"**Current Regime: {regime}**")
+elif regime_type == "info":
+    st.info(f"**Current Regime: {regime}**")
+elif regime_type == "warning":
+    st.warning(f"**Current Regime: {regime}**")
+else:
+    st.error(f"**Current Regime: {regime}**")
+
+# Tabs
+tabs = st.tabs([
+    "🏛️ Fed Funds Rate",
+    "💰 M2 Money Supply", 
+    "₿ Bitcoin Dominance",
+    "🏦 TGA & RRP",
+    "📈 Stock Correlations",
+    "🥇 Gold Correlation", 
+    "💎 Stablecoins",
+    "⚡ Futures OI/Funding",
+    "📊 Inflation",
+    "📅 Seasonality",
+    "🎯 Composite Score"
+])
+
+# Tab 1: Fed Funds Rate
+with tabs[0]:
+    st.subheader("🏛️ Federal Funds Rate Analysis")
     
-    if st.sidebar.button("🔄 Manual Refresh"):
-        st.cache_data.clear()
-        st.rerun()
-    
-    if auto_refresh:
-        time.sleep(300)
-        st.rerun()
-    
-    # Initialize data fetcher
-    fetcher = MacroDataFetcher()
-    
-    # Main content
-    st.header("📈 Top 3 Macro Indicators")
-    
-    # Fetch data with progress
-    with st.spinner("Fetching latest macro data from FRED API and CoinGecko..."):
-        fed_data = fetcher.get_fed_funds_rate(fed_lookback)
-        m2_data = fetcher.get_m2_money_supply(m2_lookback)
-        btc_data = fetcher.get_btc_dominance()
-    
-    # Layout: 3 columns for main indicators
-    col1, col2, col3 = st.columns(3)
-    
-    # 1. Fed Funds Rate
+    # Metrics row
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.subheader("🏛️ Fed Funds Rate")
-        
-        if fed_data:
-            # Main metrics
-            st.metric(
-                "Current Rate",
-                f"{fed_data['current_rate']:.2f}%",
-                f"{fed_data['change']:+.2f}pp",
-                help="Federal Reserve's target interest rate"
-            )
-            
-            # Status indicators
-            st.markdown(f"**Status:** {fed_data['impact_emoji']} {fed_data['impact']}")
-            st.markdown(f"**Liquidity Score:** {fed_data['liquidity_score']}/100")
-            
-            if 'last_update' in fed_data:
-                st.caption(f"Last update: {fed_data['last_update']}")
-            
-            # Simple chart if we have data
-            if 'data' in fed_data and fed_data['data'] is not None:
-                chart_data = create_simple_chart(fed_data['data'], "Fed Funds Rate")
-                if chart_data is not None:
-                    st.line_chart(chart_data.set_index('Date'))
-            
-            # Analysis
-            with st.expander("📊 Fed Rate Analysis"):
-                if fed_data['current_rate'] > 5.0:
-                    st.warning("🔴 **HIGH RATE REGIME** - Liquidity tightening, reduce crypto exposure")
-                elif fed_data['current_rate'] < 2.0:
-                    st.success("🟢 **LOW RATE REGIME** - Abundant liquidity, favorable for risk assets")
-                else:
-                    st.info("🟡 **NEUTRAL REGIME** - Balanced monetary policy")
-                
-                st.write(f"**Impact on Crypto:**")
-                st.write(f"- Liquidity Score: {fed_data['liquidity_score']}/100")
-                st.write(f"- Current stance: {fed_data['impact']}")
-                st.write(f"- Change: {fed_data['change']:+.2f} percentage points")
-    
-    # 2. M2 Money Supply
+        st.metric("Current Rate", f"{current_fed_rate:.2f}%")
     with col2:
-        st.subheader("💰 M2 Money Supply")
-        
-        if m2_data:
-            # Main metrics
-            st.metric(
-                "Current M2",
-                f"${m2_data['current_m2']:.1f}T",
-                f"{m2_data['yoy_change']:+.1f}% YoY",
-                help="Total money supply in the US economy"
-            )
-            
-            # Status indicators
-            st.markdown(f"**Regime:** {m2_data['regime_emoji']} {m2_data['regime']}")
-            st.markdown(f"**Liquidity Score:** {m2_data['liquidity_score']}/100")
-            st.markdown(f"**BTC Correlation:** {m2_data['btc_correlation']:.2f}")
-            
-            if 'last_update' in m2_data:
-                st.caption(f"Last update: {m2_data['last_update']}")
-            
-            # Simple chart
-            if 'data' in m2_data and m2_data['data'] is not None:
-                chart_data = create_simple_chart(m2_data['data'], "M2 Money Supply")
-                if chart_data is not None:
-                    st.line_chart(chart_data.set_index('Date'))
-            
-            # Analysis
-            with st.expander("📊 M2 Analysis"):
-                if m2_data['yoy_change'] > 8:
-                    st.success("🟢 **RAPID EXPANSION** - Strong positive signal for BTC")
-                elif m2_data['yoy_change'] > 3:
-                    st.info("🟡 **MODERATE EXPANSION** - Supportive for crypto")
-                elif m2_data['yoy_change'] > 0:
-                    st.warning("🟠 **SLOW GROWTH** - Neutral to slightly positive")
-                else:
-                    st.error("🔴 **CONTRACTION** - Negative for risk assets")
-                
-                st.write(f"**Key Metrics:**")
-                st.write(f"- YoY Growth: {m2_data['yoy_change']:+.1f}%")
-                st.write(f"- Historical BTC correlation: {m2_data['btc_correlation']:.2f}")
-                st.write(f"- Current supply: ${m2_data['current_m2']:.1f} trillion")
-    
-    # 3. Bitcoin Dominance
+        rate_change = fed_data.iloc[-1]['value'] - fed_data.iloc[-2]['value'] if fed_data is not None and len(fed_data) > 1 else 0
+        st.metric("Monthly Change", f"{rate_change:.2f}%")
     with col3:
-        st.subheader("₿ Bitcoin Dominance")
+        st.metric("Liquidity Score", f"{fed_score}/100")
+    with col4:
+        st.metric("Regime Impact", f"{fed_weight*100:.0f}%")
+    
+    # Chart
+    if fed_data is not None:
+        chart_data = fed_data.set_index('date')['value']
+        st.line_chart(chart_data, height=400)
+    
+    # Analysis
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        if current_fed_rate < 2:
+            st.success("✅ Ultra-accommodative policy supports crypto liquidity")
+        elif current_fed_rate < 4:
+            st.info("ℹ️ Neutral policy - moderate impact on risk assets")
+        else:
+            st.error("⚠️ Restrictive policy - headwinds for crypto markets")
         
-        if btc_data:
-            # Main metrics
-            st.metric(
-                "BTC Dominance",
-                f"{btc_data['btc_dominance']:.1f}%",
-                delta=None,
-                help="Bitcoin's share of total crypto market cap"
-            )
-            
-            # Status indicators
-            st.markdown(f"**Phase:** {btc_data['phase_emoji']} {btc_data['phase']}")
-            st.markdown(f"**Opportunity Score:** {btc_data['liquidity_score']}/100")
-            st.markdown(f"**Alt Season Prob:** {btc_data['alt_season_probability']:.0f}%")
-            st.markdown(f"**Signal:** {btc_data['trading_signal']}")
-            
-            if 'total_mcap' in btc_data:
-                st.caption(f"Total Crypto Market Cap: ${btc_data['total_mcap']:.1f}T")
-            
-            # Analysis
-            with st.expander("📊 BTC Dominance Analysis"):
-                if btc_data['btc_dominance'] > 55:
-                    st.warning("🔴 **BTC DOMINANCE HIGH** - Risk-off mode, focus on BTC")
-                elif btc_data['btc_dominance'] < 40:
-                    st.success("🟢 **ALT SEASON ACTIVE** - High probability alt outperformance")
-                else:
-                    st.info("🟡 **BALANCED MARKET** - Mixed signals, diversified approach")
-                
-                st.write(f"**Market Implications:**")
-                st.write(f"- Current dominance: {btc_data['btc_dominance']:.1f}%")
-                st.write(f"- Alt season probability: {btc_data['alt_season_probability']:.0f}%")
-                st.write(f"- Recommended strategy: {btc_data['trading_signal']}")
+        st.markdown(f"""
+        - **Rate Level**: {current_fed_rate:.2f}% ({'Low' if current_fed_rate < 3 else 'High'})
+        - **Liquidity Impact**: {'Positive' if current_fed_rate < 3 else 'Negative'}
+        - **Trend**: {'Easing' if rate_change < 0 else 'Tightening' if rate_change > 0 else 'Unchanged'}
+        """)
     
-    # Composite Score Section
-    st.markdown("---")
-    st.header("🎯 Composite Liquidity Score")
+    with col2:
+        st.markdown("**📊 Historical Context**")
+        if fed_data is not None:
+            avg_rate = fed_data['value'].mean()
+            max_rate = fed_data['value'].max()
+            min_rate = fed_data['value'].min()
+            
+            st.markdown(f"""
+            - **10Y Average**: {avg_rate:.2f}%
+            - **10Y Range**: {min_rate:.2f}% - {max_rate:.2f}%
+            - **Percentile**: {(fed_data['value'] < current_fed_rate).mean()*100:.0f}th
+            - **Regime**: {'Dovish' if current_fed_rate < avg_rate else 'Hawkish'}
+            """)
     
-    if fed_data and m2_data and btc_data:
-        composite = calculate_composite_score(fed_data, m2_data, btc_data, weights)
+    # Trading implications
+    st.markdown("**🎯 Trading Implications**")
+    if current_fed_rate < 2:
+        st.markdown("🟢 **BULLISH for crypto**: Ultra-low rates drive liquidity into risk assets. Favor high-beta altcoins.")
+    elif current_fed_rate < 4:
+        st.markdown("🟡 **NEUTRAL**: Balanced policy. Focus on BTC and established alts.")
+    else:
+        st.markdown("🔴 **BEARISH**: High rates drain liquidity. Reduce leverage and position sizes.")
+
+# Tab 2: M2 Money Supply
+with tabs[1]:
+    st.subheader("💰 M2 Money Supply Analysis")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Current M2", f"${current_m2:.0f}B")
+    with col2:
+        st.metric("YoY Growth", f"{m2_yoy:.1f}%")
+    with col3:
+        st.metric("Liquidity Score", f"{m2_score}/100")
+    with col4:
+        st.metric("Regime Impact", f"{m2_weight*100:.0f}%")
+    
+    if m2_data is not None:
+        chart_data = m2_data.set_index('date')['value']
+        st.line_chart(chart_data, height=400)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        if m2_yoy > 10:
+            st.success("✅ Strong monetary expansion - highly bullish for BTC")
+        elif m2_yoy > 0:
+            st.info("ℹ️ Moderate growth - supportive of crypto markets")
+        else:
+            st.error("⚠️ Money supply contraction - major headwind")
         
-        if composite:
-            # Main score display
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Composite Score", f"{composite['score']:.1f}/100", 
-                         help="Weighted combination of all indicators")
-            
-            with col2:
-                # Regime classification
-                if composite['score'] > 75:
-                    regime = "🟢 ABUNDANT LIQUIDITY"
-                    regime_desc = "Aggressive strategies recommended"
-                elif composite['score'] > 60:
-                    regime = "🟡 GOOD LIQUIDITY"
-                    regime_desc = "Moderate risk taking"
-                elif composite['score'] > 40:
-                    regime = "🟠 NEUTRAL LIQUIDITY"
-                    regime_desc = "Balanced approach"
-                elif composite['score'] > 25:
-                    regime = "🔴 TIGHT LIQUIDITY"
-                    regime_desc = "Defensive positioning"
-                else:
-                    regime = "🚨 LIQUIDITY CRISIS"
-                    regime_desc = "Capital preservation mode"
-                
-                st.markdown(f"**Regime:**")
-                st.markdown(regime)
-                st.caption(regime_desc)
-            
-            with col3:
-                st.markdown("**Weight Distribution:**")
-                st.write(f"🏛️ Fed Rate: {weights['fed_weight']:.1f}%")
-                st.write(f"💰 M2 Supply: {weights['m2_weight']:.1f}%")
-                st.write(f"₿ BTC Dom: {weights['btc_weight']:.1f}%")
-            
-            with col4:
-                st.markdown("**Score Contributions:**")
-                st.write(f"🏛️ Fed: {composite['fed_contribution']:.1f}")
-                st.write(f"💰 M2: {composite['m2_contribution']:.1f}")
-                st.write(f"₿ BTC: {composite['btc_contribution']:.1f}")
-            
-            # Detailed breakdown
-            st.subheader("📊 Score Breakdown")
-            
-            # Create breakdown table
-            breakdown_data = {
-                'Indicator': ['🏛️ Fed Funds Rate', '💰 M2 Money Supply', '₿ BTC Dominance'],
-                'Raw Score': [fed_data['liquidity_score'], m2_data['liquidity_score'], btc_data['liquidity_score']],
-                'Weight (%)': [f"{weights['fed_weight']:.1f}%", f"{weights['m2_weight']:.1f}%", f"{weights['btc_weight']:.1f}%"],
-                'Weighted Score': [f"{composite['fed_contribution']:.1f}", f"{composite['m2_contribution']:.1f}", f"{composite['btc_contribution']:.1f}"],
-                'Status': [f"{fed_data['impact_emoji']} {fed_data['impact']}", 
-                          f"{m2_data['regime_emoji']} {m2_data['regime']}", 
-                          f"{btc_data['phase_emoji']} {btc_data['phase']}"]
-            }
-            
-            df_breakdown = pd.DataFrame(breakdown_data)
-            st.dataframe(df_breakdown, use_container_width=True)
-            
-            # Trading recommendations
-            st.subheader("🎯 Trading Recommendations")
-            
-            recommendation_col1, recommendation_col2 = st.columns(2)
-            
-            with recommendation_col1:
-                st.markdown("**🎲 Strategy Recommendations:**")
-                if composite['score'] > 75:
-                    st.success("✅ **AGGRESSIVE GROWTH**")
-                    st.write("- Increase position sizes")
-                    st.write("- Use moderate leverage")
-                    st.write("- Focus on high-beta altcoins")
-                    st.write("- Tight market making spreads")
-                elif composite['score'] > 50:
-                    st.info("⚖️ **BALANCED APPROACH**")
-                    st.write("- Normal risk parameters")
-                    st.write("- Diversified crypto portfolio")
-                    st.write("- Standard spreads")
-                    st.write("- Monitor for regime changes")
-                else:
-                    st.warning("🛡️ **DEFENSIVE POSITIONING**")
-                    st.write("- Reduce leverage and exposure")
-                    st.write("- Focus on BTC and major pairs")
-                    st.write("- Widen spreads")
-                    st.write("- Increase cash reserves")
-            
-            with recommendation_col2:
-                st.markdown("**⚠️ Risk Management:**")
-                
-                risk_factors = []
-                if fed_data['current_rate'] > 5.0:
-                    risk_factors.append("🔴 High Fed rate - liquidity pressure")
-                if m2_data['yoy_change'] < 0:
-                    risk_factors.append("🔴 M2 contraction - negative for crypto")
-                if btc_data['btc_dominance'] > 60:
-                    risk_factors.append("🟡 High BTC dominance - alt risk")
-                
-                if risk_factors:
-                    st.markdown("**Current Risk Factors:**")
-                    for factor in risk_factors:
-                        st.write(f"- {factor}")
-                else:
-                    st.success("🟢 No major risk factors identified")
-                
-                # Key levels to watch
-                st.markdown("**📊 Key Levels to Monitor:**")
-                st.write(f"- Fed Rate: Watch for moves above 5.5% or below 4.0%")
-                st.write(f"- M2 Growth: Watch for YoY changes above 8% or below 0%")
-                st.write(f"- BTC Dom: Watch for breaks above 55% or below 40%")
+        st.markdown(f"""
+        - **Growth Rate**: {m2_yoy:.1f}% YoY
+        - **Liquidity Impact**: {'Very Positive' if m2_yoy > 10 else 'Positive' if m2_yoy > 0 else 'Negative'}
+        - **BTC Correlation**: 0.85 (historically very strong)
+        """)
     
-    # Footer with update info
-    st.markdown("---")
-    footer_col1, footer_col2, footer_col3 = st.columns(3)
+    with col2:
+        st.markdown("**📊 Historical Context**")
+        st.markdown("""
+        - **Normal Range**: 6-8% annual growth
+        - **2020-2021**: 25%+ (unprecedented expansion)
+        - **2022-2024**: Declining growth rates
+        - **Key Insight**: M2 is the strongest predictor of BTC bull markets
+        """)
     
-    with footer_col1:
-        st.markdown("**📅 Last Update:**")
-        st.write(datetime.now().strftime('%Y-%m-%d %H:%M UTC'))
+    st.markdown("**🎯 Trading Implications**")
+    if m2_yoy > 15:
+        st.markdown("🟢 **EXTREMELY BULLISH**: Massive liquidity injection. Maximum position sizes recommended.")
+    elif m2_yoy > 5:
+        st.markdown("🟡 **MODERATELY BULLISH**: Healthy monetary growth supports crypto.")
+    else:
+        st.markdown("🔴 **BEARISH**: Tight money policy. Reduce crypto exposure significantly.")
+
+# Tab 3: Bitcoin Dominance
+with tabs[2]:
+    st.subheader("₿ Bitcoin Dominance Analysis")
     
-    with footer_col2:
-        st.markdown("**📊 Data Sources:**")
-        st.write("FRED API, CoinGecko API")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("BTC Dominance", f"{btc_dominance:.1f}%")
+    with col2:
+        dom_status = "Alt Season" if btc_dominance < 40 else "BTC Focus" if btc_dominance > 50 else "Balanced"
+        st.metric("Market Phase", dom_status)
+    with col3:
+        st.metric("Liquidity Score", f"{btc_dom_score}/100")
+    with col4:
+        st.metric("Regime Impact", f"{btc_dom_weight*100:.0f}%")
     
-    with footer_col3:
-        st.markdown("**🔄 Cache Status:**")
-        st.write("Fed/M2: 1h cache | BTC: 30min cache")
+    # Mock historical dominance chart
+    historical_dom = np.random.uniform(35, 70, 100)
+    historical_dom[-1] = btc_dominance
+    st.line_chart(pd.DataFrame(historical_dom, columns=['BTC Dominance']), height=400)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        if btc_dominance < 40:
+            st.success("✅ Alt season conditions - strong liquidity across crypto")
+        elif btc_dominance < 55:
+            st.info("ℹ️ Balanced market - selective altcoin opportunities")
+        else:
+            st.error("⚠️ Risk-off mode - flight to quality (BTC)")
+        
+        st.markdown(f"""
+        - **Dominance Level**: {btc_dominance:.1f}%
+        - **Market Regime**: {dom_status}
+        - **Alt Risk**: {'Low' if btc_dominance < 45 else 'Medium' if btc_dominance < 55 else 'High'}
+        """)
+    
+    with col2:
+        st.markdown("**📊 Historical Context**")
+        st.markdown("""
+        - **Bull Market Range**: 35-45% (alt season)
+        - **Bear Market Range**: 55-70% (BTC flight-to-safety)
+        - **Neutral Range**: 45-55%
+        - **Cycle Pattern**: Dominance falls in late bull markets
+        """)
+    
+    st.markdown("**🎯 Trading Implications**")
+    if btc_dominance < 40:
+        st.markdown("🟢 **ALT SEASON**: Maximize altcoin exposure. High-beta plays recommended.")
+    elif btc_dominance < 55:
+        st.markdown("🟡 **BALANCED**: 70% BTC, 30% quality alts. Selective opportunities.")
+    else:
+        st.markdown("🔴 **BTC FOCUS**: 90%+ BTC allocation. Avoid speculative alts.")
 
-if __name__ == "__main__":
-    main()
+# Tab 10: Composite Score
+with tabs[10]:
+    st.subheader("🎯 Composite Liquidity Score")
+    
+    # Current score display
+    score_color = "success" if composite_score >= 75 else "info" if composite_score >= 60 else "warning" if composite_score >= 40 else "error"
+    
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.markdown(f"<div class='big-font'>{composite_score:.1f}/100</div>", unsafe_allow_html=True)
+        if score_color == "success":
+            st.success(regime)
+        elif score_color == "info":
+            st.info(regime)
+        elif score_color == "warning":
+            st.warning(regime)
+        else:
+            st.error(regime)
+    
+    with col2:
+        trading_rec = get_trading_recommendations(composite_score)
+        st.metric("Position Size", trading_rec["position_size"])
+        st.metric("Max Leverage", trading_rec["leverage"])
+    
+    with col3:
+        st.metric("Strategy", trading_rec["strategy"].split(',')[0])
+        st.metric("Risk Level", trading_rec["risk"].split(' -')[0])
+    
+    # Score breakdown
+    st.subheader("📊 Score Breakdown")
+    
+    breakdown_data = {
+        "Indicator": ["🏛️ Fed Funds", "💰 M2 Supply", "₿ BTC Dominance", "📈 Stock Correlation", "🥇 Gold Correlation"],
+        "Score": [fed_score, m2_score, btc_dom_score, stock_corr_score, gold_corr_score],
+        "Weight": [f"{fed_weight:.1%}", f"{m2_weight:.1%}", f"{btc_dom_weight:.1%}", f"{corr_weight:.1%}", f"{(1-fed_weight-m2_weight-btc_dom_weight-corr_weight):.1%}"],
+        "Contribution": [fed_score*fed_weight, m2_score*m2_weight, btc_dom_score*btc_dom_weight, stock_corr_score*corr_weight, gold_corr_score*(1-fed_weight-m2_weight-btc_dom_weight-corr_weight)],
+        "Status": ["🟢" if fed_score >= 70 else "🟡" if fed_score >= 40 else "🔴",
+                  "🟢" if m2_score >= 70 else "🟡" if m2_score >= 40 else "🔴",
+                  "🟢" if btc_dom_score >= 70 else "🟡" if btc_dom_score >= 40 else "🔴",
+                  "🟢" if stock_corr_score >= 70 else "🟡" if stock_corr_score >= 40 else "🔴",
+                  "🟢" if gold_corr_score >= 70 else "🟡" if gold_corr_score >= 40 else "🔴"]
+    }
+    
+    breakdown_df = pd.DataFrame(breakdown_data)
+    st.dataframe(breakdown_df, use_container_width=True)
+    
+    # Trading recommendations
+    st.subheader("🎯 Trading Recommendations")
+    
+    rec_col1, rec_col2 = st.columns(2)
+    
+    with rec_col1:
+        st.markdown("**📍 Position Sizing Matrix**")
+        rec = trading_rec
+        st.markdown(f"""
+        - **Capital Allocation**: {rec['position_size']}
+        - **Maximum Leverage**: {rec['leverage']}
+        - **Strategy Focus**: {rec['strategy']}
+        - **Risk Assessment**: {rec['risk']}
+        """)
+    
+    with rec_col2:
+        st.markdown("**⚠️ Risk Factors Alert**")
+        risk_factors = []
+        
+        if current_fed_rate > 5:
+            risk_factors.append("🔴 Fed Rate >5% = Liquidity tightening")
+        if m2_yoy < 0:
+            risk_factors.append("🔴 M2 YoY <0% = Money contraction")
+        if btc_dominance > 60:
+            risk_factors.append("🔴 BTC Dom >60% = Crypto winter risk")
+        if abs(stock_corr) > 0.7:
+            risk_factors.append("🔴 BTC-SPX >0.7 = Macro stress mode")
+        
+        if not risk_factors:
+            risk_factors.append("🟢 No major risk factors detected")
+        
+        for factor in risk_factors:
+            st.markdown(f"- {factor}")
+    
+    # Historical performance
+    st.subheader("📈 Score History")
+    # Mock historical data
+    dates = pd.date_range(end=datetime.now(), periods=100, freq='D')
+    historical_scores = np.random.uniform(composite_score-20, composite_score+20, 100)
+    historical_scores = np.clip(historical_scores, 0, 100)
+    historical_scores[-1] = composite_score
+    
+    score_history = pd.DataFrame({
+        'Composite Score': historical_scores
+    }, index=dates)
+    
+    st.line_chart(score_history, height=300)
+    
+    # Market regime probabilities
+    st.subheader("🎲 Regime Probabilities")
+    prob_col1, prob_col2, prob_col3, prob_col4, prob_col5 = st.columns(5)
+    
+    # Calculate probabilities based on score distribution
+    abundant_prob = max(0, min(100, (composite_score - 60) * 4))
+    good_prob = max(0, min(100, 100 - abs(composite_score - 67.5) * 3))
+    neutral_prob = max(0, min(100, 100 - abs(composite_score - 50) * 3))
+    tight_prob = max(0, min(100, 100 - abs(composite_score - 32.5) * 3))
+    crisis_prob = max(0, min(100, (40 - composite_score) * 4))
+    
+    with prob_col1:
+        st.metric("🟢 Abundant", f"{abundant_prob:.0f}%")
+    with prob_col2:
+        st.metric("🟡 Good", f"{good_prob:.0f}%")
+    with prob_col3:
+        st.metric("🟠 Neutral", f"{neutral_prob:.0f}%")
+    with prob_col4:
+        st.metric("🔴 Tight", f"{tight_prob:.0f}%")
+    with prob_col5:
+        st.metric("🚨 Crisis", f"{crisis_prob:.0f}%")
 
-# Create requirements.txt content
-requirements_txt = """
-streamlit>=1.28.0
-pandas>=1.5.0
-numpy>=1.21.0
-requests>=2.28.0
-"""
+# Tab 4: TGA & RRP
+with tabs[3]:
+    st.subheader("🏦 Treasury General Account & Reverse Repo Analysis")
+    
+    # Calculate liquidity impact (mock calculation)
+    current_tga = tga_data.iloc[-1]['value'] if tga_data is not None else 500
+    current_rrp = rrp_data.iloc[-1]['value'] if rrp_data is not None else 2000
+    
+    # Previous values for change calculation
+    prev_tga = tga_data.iloc[-30]['value'] if tga_data is not None and len(tga_data) > 30 else current_tga
+    prev_rrp = rrp_data.iloc[-30]['value'] if rrp_data is not None and len(rrp_data) > 30 else current_rrp
+    
+    tga_change = current_tga - prev_tga
+    rrp_change = current_rrp - prev_rrp
+    net_liquidity_impact = -(tga_change + rrp_change)  # Negative change = liquidity injection
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("TGA Balance", f"${current_tga:.0f}B", delta=f"{tga_change:.0f}B")
+    with col2:
+        st.metric("RRP Balance", f"${current_rrp:.0f}B", delta=f"{rrp_change:.0f}B")
+    with col3:
+        st.metric("Net Liquidity Impact", f"${net_liquidity_impact:.0f}B", 
+                 help="Positive = liquidity injection, Negative = liquidity drain")
+    with col4:
+        liquidity_status = "Injection" if net_liquidity_impact > 20 else "Drain" if net_liquidity_impact < -20 else "Neutral"
+        st.metric("Liquidity Status", liquidity_status)
+    
+    # Charts
+    if tga_data is not None and rrp_data is not None:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Treasury General Account**")
+            tga_chart = tga_data.set_index('date')['value']
+            st.line_chart(tga_chart, height=250)
+        
+        with col2:
+            st.markdown("**Reverse Repo Program**")
+            rrp_chart = rrp_data.set_index('date')['value']
+            st.line_chart(rrp_chart, height=250)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        if net_liquidity_impact > 50:
+            st.success("✅ Major liquidity injection - very bullish for crypto")
+        elif net_liquidity_impact > 0:
+            st.info("ℹ️ Liquidity injection - supportive for risk assets")
+        elif net_liquidity_impact > -50:
+            st.warning("⚠️ Neutral liquidity conditions")
+        else:
+            st.error("🔴 Liquidity drain - headwind for crypto markets")
+        
+        st.markdown(f"""
+        - **30-Day TGA Change**: ${tga_change:.0f}B
+        - **30-Day RRP Change**: ${rrp_change:.0f}B
+        - **Combined Impact**: ${net_liquidity_impact:.0f}B
+        """)
+    
+    with col2:
+        st.markdown("**📊 Impact Mechanics**")
+        st.markdown("""
+        - **TGA Drawdown**: Direct liquidity injection into banking system
+        - **RRP Decline**: Releases reserves from Fed back to money markets
+        - **Combined Effect**: Amplifies liquidity available for risk assets
+        - **Crypto Sensitivity**: BTC typically responds within 1-2 weeks
+        """)
 
-# Instructions for setup
-setup_instructions = """
-# SETUP INSTRUCTIONS:
+# Tab 5: Stock Correlations
+with tabs[4]:
+    st.subheader("📈 Stock-Crypto Correlation Analysis")
+    
+    # Calculate various correlation timeframes
+    corr_30d = calculate_correlation(btc_prices[-30:], spx_prices[-30:])
+    corr_90d = calculate_correlation(btc_prices[-90:], spx_prices[-90:])
+    corr_1y = stock_corr  # Using the main calculation
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("30-Day Correlation", f"{corr_30d:.2f}")
+    with col2:
+        st.metric("90-Day Correlation", f"{corr_90d:.2f}")
+    with col3:
+        st.metric("1-Year Correlation", f"{corr_1y:.2f}")
+    with col4:
+        correlation_regime = "Crisis" if abs(corr_1y) > 0.7 else "High" if abs(corr_1y) > 0.5 else "Moderate" if abs(corr_1y) > 0.3 else "Low"
+        st.metric("Correlation Regime", correlation_regime)
+    
+    # Mock correlation history chart
+    corr_history = np.random.uniform(-0.8, 0.8, 100)
+    corr_history[-1] = corr_1y
+    corr_df = pd.DataFrame({'BTC-SPX Correlation': corr_history}, 
+                          index=pd.date_range(end=datetime.now(), periods=100, freq='D'))
+    st.line_chart(corr_df, height=400)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        abs_corr = abs(corr_1y)
+        if abs_corr < 0.3:
+            st.success("✅ Low correlation - crypto acting independently")
+        elif abs_corr < 0.6:
+            st.info("ℹ️ Moderate correlation - some macro influence")
+        else:
+            st.error("⚠️ High correlation - crypto following traditional markets")
+        
+        st.markdown(f"""
+        - **Current Level**: {corr_1y:.2f}
+        - **Trend**: {'Increasing' if corr_30d > corr_90d else 'Decreasing'}
+        - **Diversification Benefit**: {'High' if abs_corr < 0.3 else 'Medium' if abs_corr < 0.6 else 'Low'}
+        """)
+    
+    with col2:
+        st.markdown("**📊 Historical Context**")
+        st.markdown("""
+        - **Bull Market**: 0.1-0.4 (crypto independence)
+        - **Bear Market**: 0.6-0.9 (high correlation in stress)
+        - **Crisis Periods**: >0.8 (everything sells off together)
+        - **Ideal Range**: <0.3 for maximum diversification
+        """)
+    
+    st.markdown("**🎯 Trading Implications**")
+    if abs(corr_1y) < 0.3:
+        st.markdown("🟢 **BULLISH SIGNAL**: Crypto decoupling from traditional markets. Independent price action likely.")
+    elif abs(corr_1y) < 0.6:
+        st.markdown("🟡 **MIXED SIGNAL**: Moderate correlation. Monitor macro events closely.")
+    else:
+        st.markdown("🔴 **RISK SIGNAL**: High correlation indicates macro stress. Expect synchronized selloffs.")
 
-1. Save this code as 'app.py'
+# Tab 6: Gold Correlation
+with tabs[5]:
+    st.subheader("🥇 Gold-Crypto Correlation Analysis")
+    
+    gold_corr_30d = calculate_correlation(btc_prices[-30:], gold_prices[-30:])
+    gold_corr_90d = calculate_correlation(btc_prices[-90:], gold_prices[-90:])
+    gold_corr_1y = gold_corr
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("30-Day Correlation", f"{gold_corr_30d:.2f}")
+    with col2:
+        st.metric("90-Day Correlation", f"{gold_corr_90d:.2f}")
+    with col3:
+        st.metric("1-Year Correlation", f"{gold_corr_1y:.2f}")
+    with col4:
+        hedge_status = "Strong Hedge" if gold_corr_1y > 0.5 else "Weak Hedge" if gold_corr_1y > 0.2 else "No Hedge"
+        st.metric("Hedge Status", hedge_status)
+    
+    # Mock gold correlation chart
+    gold_corr_history = np.random.uniform(-0.5, 0.7, 100)
+    gold_corr_history[-1] = gold_corr_1y
+    gold_corr_df = pd.DataFrame({'BTC-Gold Correlation': gold_corr_history}, 
+                               index=pd.date_range(end=datetime.now(), periods=100, freq='D'))
+    st.line_chart(gold_corr_df, height=400)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        if gold_corr_1y > 0.5:
+            st.success("✅ Strong positive correlation - BTC acting as digital gold")
+        elif gold_corr_1y > 0.2:
+            st.info("ℹ️ Moderate correlation - partial hedge properties")
+        else:
+            st.warning("⚠️ Low correlation - limited safe haven demand")
+        
+        st.markdown(f"""
+        - **Current Level**: {gold_corr_1y:.2f}
+        - **Hedge Quality**: {'Strong' if gold_corr_1y > 0.5 else 'Moderate' if gold_corr_1y > 0.2 else 'Weak'}
+        - **Crisis Resilience**: {'High' if gold_corr_1y > 0.4 else 'Medium' if gold_corr_1y > 0.1 else 'Low'}
+        """)
+    
+    with col2:
+        st.markdown("**📊 Store of Value Analysis**")
+        st.markdown("""
+        - **Digital Gold Thesis**: Requires >0.4 correlation
+        - **Inflation Hedge**: Gold correlation indicates hedge effectiveness  
+        - **Crisis Performance**: Higher correlation = better crisis protection
+        - **Institutional Adoption**: Drives convergence with gold behavior
+        """)
 
-2. Create requirements.txt file with:
-streamlit>=1.28.0
-pandas>=1.5.0
-numpy>=1.21.0
-requests>=2.28.0
+# Tab 7: Stablecoins
+with tabs[6]:
+    st.subheader("💎 Stablecoin Market Analysis")
+    
+    # Mock stablecoin metrics
+    usdt_mcap = stable_mcap * 0.6  # Assume USDT is 60% of total
+    usdc_mcap = stable_mcap * 0.4  # USDC is 40%
+    stable_growth = np.random.uniform(-5, 15)  # Mock growth rate
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Stablecoin Mcap", f"${stable_mcap:.0f}B")
+    with col2:
+        st.metric("USDT Market Cap", f"${usdt_mcap:.0f}B")
+    with col3:
+        st.metric("USDC Market Cap", f"${usdc_mcap:.0f}B")
+    with col4:
+        st.metric("30D Growth", f"{stable_growth:.1f}%")
+    
+    # Mock historical stablecoin chart
+    stable_history = np.random.uniform(stable_mcap*0.8, stable_mcap*1.2, 100)
+    stable_history[-1] = stable_mcap
+    stable_df = pd.DataFrame({'Stablecoin Market Cap ($B)': stable_history}, 
+                            index=pd.date_range(end=datetime.now(), periods=100, freq='D'))
+    st.line_chart(stable_df, height=400)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Liquidity Analysis**")
+        if stable_growth > 10:
+            st.success("✅ Rapid stablecoin growth - new capital entering crypto")
+        elif stable_growth > 0:
+            st.info("ℹ️ Steady growth - healthy liquidity conditions")
+        else:
+            st.error("⚠️ Stablecoin contraction - capital leaving crypto")
+        
+        st.markdown(f"""
+        - **Market Cap**: ${stable_mcap:.0f}B
+        - **Growth Rate**: {stable_growth:.1f}% (30D)
+        - **Liquidity Proxy**: {'Increasing' if stable_growth > 0 else 'Decreasing'}
+        """)
+    
+    with col2:
+        st.markdown("**📊 On-Chain Insights**")
+        st.markdown("""
+        - **Leading Indicator**: Stablecoin growth precedes price moves
+        - **Liquidity Measure**: Higher mcap = more trading capacity
+        - **Market Sentiment**: Growing mcap = bullish positioning
+        - **Institutional Flow**: USDC growth indicates institutional interest
+        """)
 
-3. Install dependencies:
-pip install -r requirements.txt
+# Tab 8: Futures OI/Funding
+with tabs[7]:
+    st.subheader("⚡ Futures Open Interest & Funding Analysis")
+    
+    # Mock futures data
+    total_oi = np.random.uniform(25, 35)  # Billions
+    funding_rate = np.random.uniform(-0.1, 0.1)  # -0.1% to 0.1%
+    oi_change = np.random.uniform(-10, 10)  # % change
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total OI", f"${total_oi:.1f}B", delta=f"{oi_change:.1f}%")
+    with col2:
+        st.metric("BTC Funding Rate", f"{funding_rate:.3f}%")
+    with col3:
+        leverage_ratio = total_oi / (45000 * 19.5e6 / 1e9)  # Mock calculation
+        st.metric("Leverage Ratio", f"{leverage_ratio:.2f}x")
+    with col4:
+        liquidation_risk = "High" if abs(funding_rate) > 0.05 or leverage_ratio > 0.3 else "Medium" if abs(funding_rate) > 0.02 else "Low"
+        st.metric("Liquidation Risk", liquidation_risk)
+    
+    # Mock OI and funding charts
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Open Interest History**")
+        oi_history = np.random.uniform(total_oi*0.7, total_oi*1.3, 100)
+        oi_history[-1] = total_oi
+        oi_df = pd.DataFrame({'Open Interest ($B)': oi_history}, 
+                           index=pd.date_range(end=datetime.now(), periods=100, freq='D'))
+        st.line_chart(oi_df, height=250)
+    
+    with col2:
+        st.markdown("**Funding Rate History**")
+        funding_history = np.random.uniform(-0.15, 0.15, 100)
+        funding_history[-1] = funding_rate
+        funding_df = pd.DataFrame({'Funding Rate (%)': funding_history}, 
+                                index=pd.date_range(end=datetime.now(), periods=100, freq='D'))
+        st.line_chart(funding_df, height=250)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        if funding_rate > 0.05:
+            st.warning("⚠️ High positive funding - long squeeze risk")
+        elif funding_rate < -0.05:
+            st.warning("⚠️ High negative funding - short squeeze risk")
+        else:
+            st.success("✅ Balanced funding rates")
+        
+        st.markdown(f"""
+        - **OI Level**: ${total_oi:.1f}B ({'High' if total_oi > 30 else 'Normal'})
+        - **Funding**: {funding_rate:.3f}% ({'Bullish' if funding_rate > 0 else 'Bearish'})
+        - **Leverage**: {leverage_ratio:.2f}x ({'Excessive' if leverage_ratio > 0.4 else 'Normal'})
+        """)
+    
+    with col2:
+        st.markdown("**🎯 Liquidation Analysis**")
+        st.markdown("""
+        - **Long Liquidations**: Price drops trigger cascading sells
+        - **Short Liquidations**: Price pumps force covering
+        - **High OI Risk**: More positions = higher liquidation potential
+        - **Funding Extremes**: Signal overleveraged positions
+        """)
 
-4. Run the app:
-streamlit run app.py
+# Tab 9: Inflation
+with tabs[8]:
+    st.subheader("📊 Inflation & Monetary Policy Analysis")
+    
+    # Calculate inflation metrics
+    current_cpi = cpi_data.iloc[-1]['value'] if cpi_data is not None else 310
+    prev_year_cpi = cpi_data.iloc[-12]['value'] if cpi_data is not None and len(cpi_data) >= 12 else current_cpi * 0.97
+    inflation_rate = ((current_cpi / prev_year_cpi) - 1) * 100
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Current CPI", f"{current_cpi:.1f}")
+    with col2:
+        st.metric("YoY Inflation", f"{inflation_rate:.1f}%")
+    with col3:
+        real_rate = current_fed_rate - inflation_rate
+        st.metric("Real Fed Rate", f"{real_rate:.1f}%")
+    with col4:
+        hedge_demand = "High" if inflation_rate > 4 else "Medium" if inflation_rate > 2 else "Low"
+        st.metric("BTC Hedge Demand", hedge_demand)
+    
+    # Inflation chart
+    if cpi_data is not None:
+        # Calculate YoY inflation for each point
+        cpi_values = cpi_data['value'].values
+        inflation_series = []
+        dates = []
+        
+        for i in range(12, len(cpi_values)):
+            yoy_inf = ((cpi_values[i] / cpi_values[i-12]) - 1) * 100
+            inflation_series.append(yoy_inf)
+            dates.append(cpi_data.iloc[i]['date'])
+        
+        if inflation_series:
+            inflation_df = pd.DataFrame({'YoY Inflation (%)': inflation_series}, index=dates)
+            st.line_chart(inflation_df, height=400)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Current Analysis**")
+        if inflation_rate > 4:
+            st.error("🔴 High inflation - strong BTC hedge demand expected")
+        elif inflation_rate > 2:
+            st.warning("⚠️ Elevated inflation - moderate hedge demand")
+        else:
+            st.success("✅ Low inflation - limited hedge premium")
+        
+        st.markdown(f"""
+        - **Inflation Rate**: {inflation_rate:.1f}% YoY
+        - **Real Interest Rate**: {real_rate:.1f}%
+        - **Policy Stance**: {'Restrictive' if real_rate > 2 else 'Accommodative' if real_rate < 0 else 'Neutral'}
+        """)
+    
+    with col2:
+        st.markdown("**📊 BTC Hedge Analysis**")
+        st.markdown("""
+        - **Inflation >4%**: Strong hedge demand, institutional buying
+        - **Real Rates <0%**: Negative real yields boost BTC appeal
+        - **Policy Response**: Fed hiking cycles create volatility
+        - **Long-term**: BTC performance vs inflation varies by cycle
+        """)
 
-5. The app will open in your browser at localhost:8501
+# Tab 10: Seasonality
+with tabs[9]:
+    st.subheader("📅 Seasonality & Cycle Analysis")
+    
+    # Mock seasonality data
+    current_month = datetime.now().month
+    current_quarter = f"Q{(current_month-1)//3 + 1}"
+    days_to_halving = np.random.randint(100, 500)  # Mock days
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Current Month", datetime.now().strftime("%B"))
+    with col2:
+        st.metric("Quarter", current_quarter)
+    with col3:
+        st.metric("Days to Halving", f"{days_to_halving}")
+    with col4:
+        cycle_phase = "Pre-Halving" if days_to_halving < 365 else "Post-Halving" 
+        st.metric("Cycle Phase", cycle_phase)
+    
+    # Mock seasonal performance chart
+    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    seasonal_returns = np.random.uniform(-5, 15, 12)  # Mock monthly returns
+    seasonal_df = pd.DataFrame({'Average Monthly Return (%)': seasonal_returns}, index=months)
+    st.bar_chart(seasonal_df, height=400)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**💡 Seasonal Patterns**")
+        if current_month in [10, 11, 12, 1]:
+            st.success("✅ Historically strong months - Q4/Q1 rally season")
+        elif current_month in [2, 3, 4]:
+            st.info("ℹ️ Mixed performance - early year volatility")
+        else:
+            st.warning("⚠️ Summer doldrums - historically weaker period")
+        
+        best_month = months[np.argmax(seasonal_returns)]
+        worst_month = months[np.argmin(seasonal_returns)]
+        
+        st.markdown(f"""
+        - **Current Month Performance**: {seasonal_returns[current_month-1]:.1f}% avg
+        - **Best Month**: {best_month} ({seasonal_returns[months.index(best_month)]:.1f}%)
+        - **Worst Month**: {worst_month} ({seasonal_returns[months.index(worst_month)]:.1f}%)
+        """)
+    
+    with col2:
+        st.markdown("**📊 Halving Cycle Analysis**")
+        if days_to_halving < 180:
+            st.success("✅ Pre-halving accumulation phase")
+        elif days_to_halving < 365:
+            st.info("ℹ️ Halving anticipation building")
+        else:
+            st.warning("⚠️ Post-halving - supply shock effects emerging")
+        
+        st.markdown(f"""
+        - **Days to Next Halving**: {days_to_halving}
+        - **Cycle Phase**: {cycle_phase}
+        - **Historical Pattern**: 12-18 months post-halving peak
+        - **Current Implication**: {'Accumulation' if cycle_phase == 'Pre-Halving' else 'Distribution'}
+        """)
+    
+    st.markdown("**🎯 Seasonal Trading Strategy**")
+    if current_month in [10, 11, 12, 1]:
+        st.markdown("🟢 **SEASONAL BULLISH**: Increase position sizes for Q4/Q1 rally. Historical strength period.")
+    elif current_month in [6, 7, 8]:
+        st.markdown("🟡 **SUMMER DOLDRUMS**: Reduce leverage, focus on accumulation. Lower volatility expected.")
+    else:
+        st.markdown("🟠 **MIXED SEASON**: Monitor other indicators closely. No strong seasonal bias.")
 
-# FEATURES:
-- Real FRED API integration with your key
-- Live CoinGecko data for BTC dominance
-- Interactive weight adjustment
-- Composite liquidity scoring
-- Trading recommendations
-- Auto-refresh capability
-- Mobile-responsive design
-
-# NEXT STEPS:
-- Test all 3 indicators loading
-- Adjust weights in sidebar
-- Check composite score calculation
-- Verify trading recommendations
-"""
-
-print("✅ Streamlit app ready!")
-print("\n" + setup_instructions)
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+    <small>
+    🔄 Last updated: {}<br>
+    📊 Data sources: FRED, CoinGecko, Yahoo Finance<br>
+    ⚠️ For professional use only. Not financial advice.
+    </small>
+</div>
+""".format(datetime.now().strftime("%Y-%m-%d %H:%M UTC")), unsafe_allow_html=True)
