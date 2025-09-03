@@ -1,4 +1,48 @@
-# STREAMLIT MACRO-CRYPTO DASHBOARD
+# TAB 4: TGA & RRP
+    with tab4:
+        st.header("🏦 Treasury General Account & Reverse Repo Analysis")
+        st.markdown("*Direct impact on market liquidity - when TGA/RRP increases, liquidity decreases*")
+        
+        if tga_rrp_data:
+            # Key metrics row
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "TGA Balance",
+                    f"${tga_rrp_data['tga_current']:.0f}B",
+                    f"{tga_rrp_data['tga_change']:+.0f}B",
+                    help="US Treasury's cash balance at the Fed"
+                )
+            
+            with col2:
+                st.metric(
+                    "RRP Balance", 
+                    f"${tga_rrp_data['rrp_current']:.0f}B",
+                    f"{tga_rrp_data['rrp_change']:+.0f}B",
+                    help="Overnight Reverse Repo Facility usage"
+                )
+            
+            with col3:
+                st.metric(
+                    "Net Liquidity Impact",
+                    f"{tga_rrp_data['total_liquidity_impact']:+.0f}B",
+                    help="Combined TGA + RRP change (negative = liquidity injection)"
+                )
+            
+            with col4:
+                st.metric(
+                    "Market Impact",
+                    tga_rrp_data['market_impact'],
+                    help="Overall assessment of liquidity conditions"
+                )
+            
+            st.markdown("---")
+            
+            # Combined chart showing both TGA and RRP
+            st.subheader("📈 TGA & RRP Historical Trends (10 Years)")
+            
+            chart_col1, chart_col2 = st.columns# STREAMLIT MACRO-CRYPTO DASHBOARD
 # Top 3 Indicators MVP - Fixed Dependencies Version
 # Requirements: streamlit pandas requests
 
